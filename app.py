@@ -513,15 +513,6 @@ with st.sidebar:
         except Exception as e:
             st.warning(f"학교 공유 정보 조회 실패: {e}")
     
-    # 세션 공유 기능
-    st.subheader("이 작업 공유하기")
-    try:
-        session_url = f"{st.runtime.get_instance().media_file_mgr.public_url}?session={st.session_state.work_session_id}"
-        st.code(session_url)
-        st.info("위 URL을 공유하여 다른 사용자를 초대하세요.")
-    except:
-        st.warning("URL 생성에 실패했습니다.")
-
     if firebase_available:
         # Firebase 설정 상태 확인
         st.info("Firebase 연결 상태: 활성")
