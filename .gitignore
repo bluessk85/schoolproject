@@ -1,0 +1,12 @@
+# Python / Streamlit project ignores
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local uploads and backups
+uploads/
+_git_backup/
+
+# Streamlit secrets (keep out of git)
+.streamlit/
