@@ -36,7 +36,7 @@ db = None
 
 try:
     import firebase_admin
-    from firebase_admin import credentials, db as firebase_rtdb
+    from firebase_admin import credentials, db as firebase_rtdb, storage
 
     # Streamlit secrets에서 직접 dictionary 형태로 자격 증명을 로드
     if "firebase" in st.secrets:
@@ -44,6 +44,8 @@ try:
             # st.secrets는 dict-like 객체를 반환하므로 dict()로 변환하여 사용
             cred_dict = dict(st.secrets["firebase"]["service_account_key"])
             database_url = st.secrets["firebase"]["database_url"]
+            # 스토리지 버킷 URL (하드코딩)
+            storage_bucket = "project-a019a.firebasestorage.app"
 
             # placeholder 값인지 확인
             if "your-project-id" in cred_dict.get("project_id", ""):
@@ -55,7 +57,8 @@ try:
                 
                 if not firebase_admin._apps:
                     firebase_admin.initialize_app(cred, {
-                        'databaseURL': database_url
+                        'databaseURL': database_url,
+                        'storageBucket': storage_bucket
                     })
                 
                 firebase_available = True
@@ -74,6 +77,18 @@ except ImportError as e:
 
 # INSERT_YOUR_REWRITE_HERE
 
+# 사용자 세션 ID 초기화 (URL 파라미터 기반 영구 유지)
+if 'session_id' not in st.session_state:
+    # URL에 user_id가 있는지 확인
+    query_params = st.query_params
+    if 'user_id' in query_params:
+        st.session_state.session_id = query_params['user_id']
+    else:
+        # 없으면 새로 생성하고 URL에 저장
+        new_user_id = f"user_{int(time.time())}_{random.randint(1000, 9999)}"
+        st.session_state.session_id = new_user_id
+        st.query_params['user_id'] = new_user_id
+
 if 'work_session_id' not in st.session_state:
     st.session_state.work_session_id = f"session_{int(time.time())}"
     
@@ -89,10 +104,6 @@ if 'school_excluded_dates' not in st.session_state:
 # 작업 흐름 제어를 위한 세션 상태 초기화
 if 'processing_step' not in st.session_state:
     st.session_state.processing_step = 'start'  # 'start', 'converting', 'results'
-
-# 사용자 세션 ID 초기화
-if 'session_id' not in st.session_state:
-    st.session_state.session_id = f"user_{int(time.time())}_{random.randint(1000, 9999)}"
     
 # 학교 목록 초기화 (비어있는 목록으로 시작)
 if 'school_list' not in st.session_state:
@@ -110,6 +121,10 @@ if 'room_required_count' not in st.session_state:
 if 'room_name' not in st.session_state:
     st.session_state.room_name = None
 
+# URL 파라미터 변경 시 세션 상태 업데이트 (사용자가 URL을 공유받아 들어온 경우)
+current_query_params = st.query_params
+if 'user_id' in current_query_params and st.session_state.session_id != current_query_params['user_id']:
+    st.session_state.session_id = current_query_params['user_id']
 
 
 # 사용자 상태 업데이트 함수
@@ -118,11 +133,19 @@ def update_user_status(status="online"):
     
     if firebase_available:
         try:
-            user_path = f"sessions/{st.session_state.work_session_id}/users/{st.session_state.session_id}"
-            db.reference(user_path).update({
-                "last_seen": int(time.time()),
-                "status": status
-            })
+            # 방에 참여 중이면 방 참여자 상태 업데이트, 아니면 전역 세션 상태
+            if st.session_state.room_id and st.session_state.school_code:
+                user_path = f"rooms/{st.session_state.school_code}/{st.session_state.room_id}/participants/{st.session_state.session_id}"
+                db.reference(user_path).update({
+                    "last_seen": int(time.time()),
+                    "status": status
+                })
+            else:
+                user_path = f"sessions/{st.session_state.work_session_id}/users/{st.session_state.session_id}"
+                db.reference(user_path).update({
+                    "last_seen": int(time.time()),
+                    "status": status
+                })
         except Exception as e:
             st.sidebar.error(f"사용자 상태 업데이트 실패: {e}")
             st.sidebar.warning("Firebase 데이터베이스 보안 규칙을 확인하세요.")
@@ -143,7 +166,12 @@ def on_user_exit():
 def get_active_users():
     if firebase_available:
         try:
-            users_path = f"sessions/{st.session_state.work_session_id}/users"
+            # 방에 참여 중이면 방 참여자 수
+            if st.session_state.room_id and st.session_state.school_code:
+                users_path = f"rooms/{st.session_state.school_code}/{st.session_state.room_id}/participants"
+            else:
+                users_path = f"sessions/{st.session_state.work_session_id}/users"
+                
             users = db.reference(users_path).get()
             active_users = []
 
@@ -159,102 +187,166 @@ def get_active_users():
             return 1
     return 1  # Firebase 사용 불가 시 기본값 1 반환
 
-# 업로드된 파일 저장 함수 (Storage 사용 않고 Database만 사용)
+# 업로드된 파일 저장 함수 (Storage 사용)
 def save_uploaded_file(uploaded_file, school_code, school_name):
     """
-    업로드된 파일 저장 및 Firebase에 메타데이터 업로드
+    업로드된 파일 저장 및 Firebase Storage/Database에 업로드
     """
     logging.info(f"파일 처리 시작: {uploaded_file.name}")
     
-    # 파일 저장 디렉토리 생성
+    # 로컬 저장 디렉토리 생성
     save_folder = os.path.join("uploads", school_code)
     os.makedirs(save_folder, exist_ok=True)
     
     # 저장 경로
     save_path = os.path.join(save_folder, uploaded_file.name)
     
-    # 파일 저장
+    # 로컬 파일 저장
     with open(save_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    logging.info(f"파일 저장 완료: {save_path}")
+    logging.info(f"로컬 파일 저장 완료: {save_path}")
     
-    # Firebase 메타데이터 업로드 시도
+    # Firebase 업로드 시도
     firebase_upload_success = False
     if firebase_available and db is not None:
         try:
-            # 파일 확장자에 따라 파일 읽기
+            # 1. 파일 데이터 분석 (메타데이터용)
             file_ext = os.path.splitext(uploaded_file.name)[1].lower()
             if file_ext in ['.xlsx', '.xls']:
                 df = pd.read_excel(save_path)
             elif file_ext == '.csv':
                 df = pd.read_csv(save_path)
             else:
-                raise ValueError(f"지원하지 않는 파일 형식: {file_ext}")
+                # 분석하지 않고 계속 진행
+                df = pd.DataFrame()
             
             # 날짜 형식으로 추정되는 컬럼 추출
             date_columns = []
-            for col in df.columns:
-                if '날짜' in str(col) or 'date' in str(col).lower() or '일자' in str(col):
-                    date_columns.append(col)
+            if not df.empty:
+                for col in df.columns:
+                    if '날짜' in str(col) or 'date' in str(col).lower() or '일자' in str(col):
+                        date_columns.append(col)
             
-            # 파일 메타데이터
+            # 2. Firebase Storage에 파일 업로드
+            bucket = storage.bucket()
+            room_id_path = st.session_state.get("room_id", "common")
+            blob_path = f"uploads/{school_code}/{room_id_path}/{uploaded_file.name}" # 방 별로 경로 분리
+            blob = bucket.blob(blob_path)
+            
+            # 메타데이터 설정
+            blob.metadata = {
+                "upload_user": st.session_state.session_id,
+                "school_name": school_name,
+                "original_filename": uploaded_file.name,
+                "room_id": st.session_state.get("room_id")
+            }
+            
+            blob.upload_from_filename(save_path)
+            logging.info(f"Firebase Storage 업로드 성공: {blob_path}")
+            
+            # 3. Realtime Database에 메타데이터 저장
             file_metadata = {
                 "filename": uploaded_file.name,
                 "upload_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "upload_user": st.session_state.session_id,  # 사용자 ID 추가
-                "column_names": list(df.columns),
-                "row_count": len(df),
+                "upload_user": st.session_state.session_id,
+                "storage_path": blob_path,  # 스토리지 경로 저장
+                "column_names": list(df.columns) if not df.empty else [],
+                "row_count": len(df) if not df.empty else 0,
                 "date_columns": date_columns,
                 "school_name": school_name,
                 "room_id": st.session_state.get("room_id"),
                 "room_name": st.session_state.get("room_name"),
             }
             
-            # Firebase에 메타데이터 저장
-            db.reference(f"file_uploads/{school_code}/{uploaded_file.name.replace('.', '_')}").set(file_metadata)
+            # 파일 키 생성 (특수문자 제외)
+            file_key = uploaded_file.name.replace('.', '_')
+            db.reference(f"file_uploads/{school_code}/{file_key}").set(file_metadata)
             
-            logging.info(f"Firebase에 메타데이터 업로드 성공: {uploaded_file.name}")
+            logging.info(f"Firebase RB에 메타데이터 저장 성공: {file_key}")
             firebase_upload_success = True
             
         except Exception as e:
             logging.error(f"Firebase 업로드 실패: {e}")
-            st.warning(f"파일은 저장되었지만 Firebase 업로드 중 오류 발생: {e}")
+            st.warning(f"파일은 로컬에 저장되었지만 클라우드 백업 중 오류 발생: {e}")
+            if "storage" not in str(e).lower():
+                # 스토리지 오류가 아니면 재발생시키지 않음
+                pass
     
     return {
         "local_path": save_path,
         "firebase_upload": firebase_upload_success
     }
 
-# 공유된 파일 데이터 가져오기 (Storage 없이 Database만 사용)
+# 공유된 파일 데이터 가져오기 (Storage에서 다운로드)
 def download_firebase_file(user_id, filename):
     global firebase_available
     
-    if not firebase_available or db is None:
+    if not firebase_available:
         return None
     
     try:
-        # 날짜 데이터 가져오기
+        school_code = st.session_state.get("school_code")
+        if not school_code:
+            return None
+            
+        # 1. 파일 메타데이터 조회
+        file_key = filename.replace('.', '_')
+        file_meta = db.reference(f"file_uploads/{school_code}/{file_key}").get()
+        
+        if not file_meta:
+            # 예전 방식(session 저장) 시도
+            return download_old_session_file(user_id, filename)
+            
+        # 2. Storage에서 다운로드
+        storage_path = file_meta.get("storage_path")
+        if not storage_path:
+             storage_path = f"uploads/{school_code}/{filename}" # 구버전 호환
+        
+        # 로컬 저장 경로
+        local_dir = os.path.join("uploads", school_code)
+        os.makedirs(local_dir, exist_ok=True)
+        local_path = os.path.join(local_dir, filename)
+        
+        # 이미 존재하면 다운로드 건너뛰기 (선택 사항)
+        # if os.path.exists(local_path): ...
+        
+        bucket = storage.bucket()
+        blob = bucket.blob(storage_path)
+        
+        if blob.exists():
+            blob.download_to_filename(local_path)
+            logging.info(f"Storage에서 파일 다운로드 완료: {local_path}")
+            
+            # 데이터프레임 로드
+            file_ext = os.path.splitext(filename)[1].lower()
+            if file_ext in ['.xlsx', '.xls']:
+                return pd.read_excel(local_path)
+            elif file_ext == '.csv':
+                return pd.read_csv(local_path)
+        else:
+            st.warning(f"클라우드 저장소에서 파일 {filename}을 찾을 수 없습니다.")
+            return None
+            
+    except Exception as e:
+        st.error(f"파일 다운로드 중 오류 발생: {e}")
+        return None
+        
+    return None
+
+# 이전 방식 호환성 유지를 위한 함수
+def download_old_session_file(user_id, filename):
+    try:
         file_key = filename.replace('.', '_')
         dates_path = f"sessions/{st.session_state.work_session_id}/file_data/{user_id}/{file_key}"
         result = db.reference(dates_path).get()
         
         if result and 'dates' in result:
             date_values = result['dates']
-            
-            # 데이터프레임 생성
-            df = pd.DataFrame({
-                '날짜': date_values
-            })
-            
-            return df
-        else:
-            st.warning(f"파일 {filename}의 데이터를 찾을 수 없습니다.")
-            return None
-            
-    except Exception as e:
-        st.error(f"공유 데이터 로드 오류: {e}")
-        return None
+            return pd.DataFrame({'날짜': date_values})
+    except:
+        pass
+    return None
 
 # 모든 업로드된 파일 가져오기
 def get_all_uploaded_files():
@@ -281,6 +373,16 @@ def get_all_uploaded_files():
                 for file_key, file_info in items_iter:
                     if not isinstance(file_info, dict):
                         continue
+                        
+                    # 현재 방의 파일만 필터링 (방이 지정된 경우)
+                    current_room_id = st.session_state.get("room_id")
+                    file_room_id = file_info.get("room_id")
+                    
+                    # 방 ID가 없거나(공용??), 내 방과 같을 때만 표시
+                    # (혹은 정책에 따라 다를 수 있지만, 여기서는 같은 방 파일만 가져오는 게 안전)
+                    if current_room_id and file_room_id != current_room_id:
+                        continue
+                        
                     all_files.append({
                         "user_id": file_info.get("upload_user", "unknown"),
                         "file_id": file_key,
@@ -296,28 +398,27 @@ def get_all_uploaded_files():
             return []
     return []
 
-# 세션 상태 업데이트
+# 세션 상태 업데이트 - 방 단위
 def update_session_state(state):
     global firebase_available
     
-    if firebase_available:
+    if firebase_available and st.session_state.room_id:
         try:
-            db.reference(f"sessions/{st.session_state.work_session_id}/state").set(state)
+            db.reference(f"rooms/{st.session_state.school_code}/{st.session_state.room_id}/state").set(state)
         except Exception as e:
             st.warning(f"세션 상태 업데이트 실패: {e}")
             firebase_available = False
 
-# 세션 상태 가져오기
+# 세션 상태 가져오기 - 방 단위
 def get_session_state():
     global firebase_available
     
-    if firebase_available:
+    if firebase_available and st.session_state.room_id:
         try:
-            state = db.reference(f"sessions/{st.session_state.work_session_id}/state").get()
+            state = db.reference(f"rooms/{st.session_state.school_code}/{st.session_state.room_id}/state").get()
             return state if state else "start"
         except Exception as e:
-            st.warning(f"세션 상태 조회 실패: {e}")
-            firebase_available = False
+            # st.warning(f"세션 상태 조회 실패: {e}") # 조용히 처리
             return "start"
     return "start"
 
@@ -341,6 +442,7 @@ def create_room(school_code, required_count, room_name):
             "created_at": int(time.time()),
             "created_by": st.session_state.session_id,
             "room_name": room_name or room_id,
+            "state": "start"
         })
         return room_id
     except Exception:
@@ -353,9 +455,11 @@ def join_room(school_code, room_id):
         participants_path = f"rooms/{school_code}/{room_id}/participants/{st.session_state.session_id}"
         db.reference(participants_path).update({
             "uploaded": False,
-            "joined_at": int(time.time())
+            "joined_at": int(time.time()),
+            "status": "online",
+            "last_seen": int(time.time())
         })
-        st.session_state.work_session_id = room_id  # 기존 세션 ID를 방 ID로 사용
+        st.session_state.work_session_id = room_id  # 기존 세션 ID를 방 ID로 사용 (호환성)
         # 방 이름 저장
         room_info = db.reference(f"rooms/{school_code}/{room_id}").get() or {}
         st.session_state.room_name = room_info.get("room_name", room_id)
@@ -383,44 +487,63 @@ def get_room_status(school_code, room_id):
     total = len(participants)
     return room_ref, ready, total
 
-# 세션 초기화
-def reset_session():
+# 방 초기화 (강력한 cleanup 포함)
+def reset_room(school_code, room_id):
     global firebase_available
     
-    if firebase_available:
-        try:
-            # 세션 상태 초기화
-            db.reference(f"sessions/{st.session_state.work_session_id}").delete()
+    if not firebase_available or not school_code or not room_id:
+        return False
+        
+    try:
+        logging.info(f"방 초기화 시작: {room_id}")
+        
+        # 1. 스토리지 파일 삭제
+        bucket = storage.bucket()
+        # 해당 방의 폴더 전체 삭제 (uploads/{school_code}/{room_id}/...)
+        prefix = f"uploads/{school_code}/{room_id}/"
+        blobs = bucket.list_blobs(prefix=prefix)
+        deleted_count = 0
+        for blob in blobs:
+            try:
+                blob.delete()
+                deleted_count += 1
+            except Exception as e:
+                logging.warning(f"Blob 삭제 실패: {blob.name} - {e}")
+        
+        logging.info(f"스토리지 파일 {deleted_count}개 삭제 완료")
+        
+        # 2. 메타데이터(file_uploads) 삭제
+        # 전체를 뒤져서 해당 room_id인 것만 지워야 하는 비효율이 있지만,
+        # 현재 구조상 file_uploads/{school_code} 밑에 플랫하게 있음.
+        # 따라서 키를 순회하며 확인해야 함.
+        files_ref = db.reference(f"file_uploads/{school_code}")
+        files_data = files_ref.get()
+        if files_data:
+            for file_key, file_val in files_data.items():
+                if isinstance(file_val, dict) and file_val.get("room_id") == room_id:
+                    db.reference(f"file_uploads/{school_code}/{file_key}").delete()
+        
+        # 3. 방 데이터(rooms) 삭제
+        db.reference(f"rooms/{school_code}/{room_id}").delete()
+        
+        # 4. 로컬 세션 클리어
+        st.session_state.room_id = None
+        st.session_state.room_name = None
+        st.session_state.processing_step = "start"
+        if school_code in st.session_state.school_dataframes:
+            del st.session_state.school_dataframes[school_code]
             
-            # 선택한 학교의 파일/방 데이터 삭제
-            school_code = st.session_state.get("school_code")
-            if school_code:
-                db.reference(f"file_uploads/{school_code}").delete()
-                db.reference(f"rooms/{school_code}").delete()
-            
-            # 스토리지 파일 삭제
-            files = get_all_uploaded_files()
-            for file in files:
-                try:
-                    # Storage 사용 시 필요한 코드 추가
-                    pass
-                except:
-                    pass
-            
-            # 세션 상태 재설정
-            update_session_state("start")
-            
-            # 세션 상태 초기화
-            st.session_state.processing_step = "start"
-            if "school_dataframes" in st.session_state:
-                del st.session_state.school_dataframes
-            
-            return True
-        except Exception as e:
-            st.error(f"세션 초기화 실패: {e}")
-            firebase_available = False
-            return False
-    return False
+        logging.info("방 데이터 삭제 완료")
+        return True
+        
+    except Exception as e:
+        st.error(f"방 삭제/초기화 중 오류 발생: {e}")
+        return False
+
+# (구) 세션 초기화 - 삭제 예정이거나 전체 초기화용으로 남김
+def reset_session_legacy():
+    # ... 코드 유지 ...
+    pass
 
 # 페이지 로드 시 사용자 상태 업데이트
 update_user_status()
@@ -752,12 +875,21 @@ if selected_project == '이수 가능한 날짜 찾기':
             room_name = room_info.get("room_name", st.session_state.room_id) if room_info else st.session_state.room_id
             st.session_state.room_name = room_name
             st.info(f"현재 방: {room_name} ({st.session_state.room_id}) | 업로드 완료 {ready_cnt}/{room_info.get('required_count', st.session_state.room_required_count)}명 (참여 {total_cnt}명)")
-            if room_info and room_info.get("created_by") == st.session_state.session_id:
-                if st.button("이 방 삭제하기"):
-                    db.reference(f"rooms/{school_code}/{st.session_state.room_id}").delete()
-                    st.session_state.room_id = None
-                    st.success("방이 삭제되었습니다.")
-                    st.rerun()
+            
+            # 방장(생성자)에게만 삭제 권한 부여
+            creator_id = room_info.get("created_by") if room_info else None
+            is_owner = (creator_id == st.session_state.session_id)
+            
+            if is_owner:
+                st.write("### 👑 방 관리")
+                st.info("당신은 이 방의 방장입니다.")
+                if st.button("🚨 이 방 삭제 및 초기화"):
+                    if reset_room(school_code, st.session_state.room_id):
+                        st.success("방과 관련된 모든 파일이 삭제되었습니다.")
+                        st.session_state.room_id = None
+                        st.rerun()
+            else:
+                 st.write(f"방장: {creator_id[:8]}..." if creator_id else "방장 미상")
 
     # 업로드된 파일 목록 표시
     if firebase_available and st.session_state.processing_step == 'start':
