@@ -398,21 +398,13 @@ def get_all_uploaded_files():
                     if not isinstance(file_info, dict):
                         continue
                         
-                    # 현재 방의 파일만 필터링 (방이 지정된 경우)
-                    current_room_id = st.session_state.get("room_id")
-                    file_room_id = file_info.get("room_id")
-                    
-                    # 방 ID가 없거나(공용??), 내 방과 같을 때만 표시
-                    # (혹은 정책에 따라 다를 수 있지만, 여기서는 같은 방 파일만 가져오는 게 안전)
-                    if current_room_id and file_room_id != current_room_id:
-                        continue
-                        
                     all_files.append({
                         "user_id": file_info.get("upload_user", "unknown"),
                         "file_id": file_key,
                         "filename": file_info.get("filename", "알 수 없는 파일"),
                         "upload_time": file_info.get("upload_time", 0),
-                        "storage_path": file_info.get("storage_path", "")
+                        "storage_path": file_info.get("storage_path", ""),
+                        "room_id": file_info.get("room_id", None)  # room_id 추가
                     })
             
             return all_files
@@ -1053,6 +1045,44 @@ if selected_project == '이수 가능한 날짜 찾기':
             st.success(f"선택된 학교: {school_info['SCHUL_NM']} ({school_info['ATPT_OFCDC_SC_NM']})")
         else:
             st.info(f"선택된 학교 코드: {school_code}")
+        
+        # 방에 참여 중이면 해당 방의 파일 자동 로드
+        if firebase_available and st.session_state.room_id:
+            # 방의 파일이 로드되지 않았으면 로드
+            load_key = f"room_files_loaded_{st.session_state.room_id}"
+            if load_key not in st.session_state:
+                with st.spinner("방의 업로드된 파일을 불러오는 중..."):
+                    all_files = get_all_uploaded_files()
+                    # 현재 방의 파일만 필터링
+                    room_files = [f for f in all_files if f.get("room_id") == st.session_state.room_id]
+                    
+                    if room_files:
+                        loaded_count = 0
+                        for file in room_files:
+                            # 파일 다운로드 및 로드
+                            df = download_firebase_file(file["user_id"], file["filename"])
+                            if df is not None:
+                                if school_code not in st.session_state.school_dataframes:
+                                    st.session_state.school_dataframes[school_code] = []
+                                
+                                # 중복 체크
+                                already_exists = any(
+                                    item['filename'] == file["filename"] 
+                                    for item in st.session_state.school_dataframes[school_code]
+                                )
+                                
+                                if not already_exists:
+                                    st.session_state.school_dataframes[school_code].append({
+                                        'dataframe': df,
+                                        'filename': file["filename"]
+                                    })
+                                    loaded_count += 1
+                        
+                        if loaded_count > 0:
+                            st.success(f"✅ {loaded_count}개의 파일을 불러왔습니다!")
+                    
+                    # 로드 완료 표시
+                    st.session_state[load_key] = True
 
     # 파일 업로드
     uploaded_files = st.file_uploader("엑셀 파일 업로드 (여러 파일 가능)", type=["xlsx", "xls"], accept_multiple_files=True)
