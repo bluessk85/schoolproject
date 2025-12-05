@@ -52,18 +52,17 @@ try:
                 st.sidebar.warning("Firebase 서비스 계정 키가 .streamlit/secrets.toml 파일에 설정되지 않았습니다.")
             else:
                 # private_key의 "\\n"을 실제 줄바꿈 문자로 변경하여 확실하게 처리
-                cred_dict['private_key'] = cred_dict['private_key'].replace('\\n', '\n')
+                cred_dict['private_key'] = cred_dict['private_key'].replace('\\\\n', '\\n')
                 cred = credentials.Certificate(cred_dict)
                 
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred, {
-                'databaseURL': database_url,
-                'storageBucket': storage_bucket
-            })
-        # Store bucket name globally for later use
-        global STORAGE_BUCKET_NAME
-        STORAGE_BUCKET_NAME = storage_bucket
-
+                if not firebase_admin._apps:
+                    firebase_admin.initialize_app(cred, {
+                        'databaseURL': database_url,
+                        'storageBucket': storage_bucket
+                    })
+                # Store bucket name globally for later use
+                global STORAGE_BUCKET_NAME
+                STORAGE_BUCKET_NAME = storage_bucket
 
         except Exception as e:
             st.sidebar.error(f"Firebase Admin SDK 초기화 실패: {e}")
