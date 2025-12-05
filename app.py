@@ -498,12 +498,24 @@ def join_room(school_code, room_id):
         return False
     try:
         participants_path = f"rooms/{school_code}/{room_id}/participants/{st.session_state.session_id}"
-        db.reference(participants_path).update({
-            "uploaded": False,
-            "joined_at": int(time.time()),
+        
+        # 기존 참여자 정보 확인
+        existing_participant = db.reference(participants_path).get()
+        
+        # 업데이트할 데이터 준비
+        update_data = {
+            "joined_at": existing_participant.get("joined_at", int(time.time())) if existing_participant else int(time.time()),
             "status": "online",
             "last_seen": int(time.time())
-        })
+        }
+        
+        # 기존 참여자가 아니면 uploaded를 False로 설정
+        if not existing_participant:
+            update_data["uploaded"] = False
+        # 기존 참여자면 uploaded 상태 유지 (업데이트하지 않음)
+        
+        db.reference(participants_path).update(update_data)
+        
         st.session_state.work_session_id = room_id  # 기존 세션 ID를 방 ID로 사용 (호환성)
         # 방 이름 저장
         room_info = db.reference(f"rooms/{school_code}/{room_id}").get() or {}
