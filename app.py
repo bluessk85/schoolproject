@@ -67,7 +67,7 @@ try:
                 
                 # Firebase 연결 성공 - 전역 변수 설정
                 firebase_available = True
-                db = firebase_rtdb.child()
+                db = firebase_rtdb
 
         except Exception as e:
             st.sidebar.error(f"Firebase Admin SDK 초기화 실패: {e}")
@@ -140,13 +140,13 @@ def update_user_status(status="online"):
             # 방에 참여 중이면 방 참여자 상태 업데이트, 아니면 전역 세션 상태
             if st.session_state.room_id and st.session_state.school_code:
                 user_path = f"rooms/{st.session_state.school_code}/{st.session_state.room_id}/participants/{st.session_state.session_id}"
-                db.child(user_path).update({
+                db.reference(user_path).update({
                     "last_seen": int(time.time()),
                     "status": status
                 })
             else:
                 user_path = f"sessions/{st.session_state.work_session_id}/users/{st.session_state.session_id}"
-                db.child(user_path).update({
+                db.reference(user_path).update({
                     "last_seen": int(time.time()),
                     "status": status
                 })
@@ -176,7 +176,7 @@ def get_active_users():
             else:
                 users_path = f"sessions/{st.session_state.work_session_id}/users"
                 
-            users = db.child(users_path).get()
+            users = db.reference(users_path).get()
             active_users = []
 
             if users:
@@ -265,7 +265,7 @@ def save_uploaded_file(uploaded_file, school_code, school_name):
             
             # 파일 키 생성 (특수문자 제외)
             file_key = uploaded_file.name.replace('.', '_')
-            db.child(f"file_uploads/{school_code}/{file_key}").set(file_metadata)
+            db.reference(f"file_uploads/{school_code}/{file_key}").set(file_metadata)
             
             logging.info(f"Firebase RB에 메타데이터 저장 성공: {file_key}")
             firebase_upload_success = True
@@ -296,7 +296,7 @@ def download_firebase_file(user_id, filename):
             
         # 1. 파일 메타데이터 조회
         file_key = filename.replace('.', '_')
-        file_meta = db.child(f"file_uploads/{school_code}/{file_key}").get()
+        file_meta = db.reference(f"file_uploads/{school_code}/{file_key}").get()
         
         if not file_meta:
             # 예전 방식(session 저장) 시도
@@ -343,7 +343,7 @@ def download_old_session_file(user_id, filename):
     try:
         file_key = filename.replace('.', '_')
         dates_path = f"sessions/{st.session_state.work_session_id}/file_data/{user_id}/{file_key}"
-        result = db.child(dates_path).get()
+        result = db.reference(dates_path).get()
         
         if result and 'dates' in result:
             date_values = result['dates']
@@ -383,7 +383,7 @@ def get_all_uploaded_files():
 
         files_path = f"file_uploads/{school_code}"
         try:
-            files_data = db.child(files_path).get()
+            files_data = db.reference(files_path).get()
             
             all_files = []
             if files_data:
@@ -428,7 +428,7 @@ def update_session_state(state):
     
     if firebase_available and st.session_state.room_id:
         try:
-            db.child(f"rooms/{st.session_state.school_code}/{st.session_state.room_id}/state").set(state)
+            db.reference(f"rooms/{st.session_state.school_code}/{st.session_state.room_id}/state").set(state)
         except Exception as e:
             st.warning(f"세션 상태 업데이트 실패: {e}")
             firebase_available = False
@@ -439,7 +439,7 @@ def get_session_state():
     
     if firebase_available and st.session_state.room_id:
         try:
-            state = db.child(f"rooms/{st.session_state.school_code}/{st.session_state.room_id}/state").get()
+            state = db.reference(f"rooms/{st.session_state.school_code}/{st.session_state.room_id}/state").get()
             return state if state else "start"
         except Exception as e:
             # st.warning(f"세션 상태 조회 실패: {e}") # 조용히 처리
@@ -451,7 +451,7 @@ def get_rooms_for_school(school_code):
     if not firebase_available or not school_code:
         return {}
     try:
-        data = db.child(f"rooms/{school_code}").get()
+        data = db.reference(f"rooms/{school_code}").get()
         return data or {}
     except Exception:
         return {}
@@ -490,7 +490,7 @@ def create_room(school_code, required_count, room_name, room_password=None):
         else:
             room_data["has_password"] = False
             
-        db.child(f"rooms/{school_code}/{room_id}").set(room_data)
+        db.reference(f"rooms/{school_code}/{room_id}").set(room_data)
         return room_id
     except Exception as e:
         logging.error(f"방 생성 실패: {e}")
@@ -501,7 +501,7 @@ def join_room(school_code, room_id):
         return False
     try:
         participants_path = f"rooms/{school_code}/{room_id}/participants/{st.session_state.session_id}"
-        db.child(participants_path).update({
+        db.reference(participants_path).update({
             "uploaded": False,
             "joined_at": int(time.time()),
             "status": "online",
@@ -509,7 +509,7 @@ def join_room(school_code, room_id):
         })
         st.session_state.work_session_id = room_id  # 기존 세션 ID를 방 ID로 사용 (호환성)
         # 방 이름 저장
-        room_info = db.child(f"rooms/{school_code}/{room_id}").get() or {}
+        room_info = db.reference(f"rooms/{school_code}/{room_id}").get() or {}
         st.session_state.room_name = room_info.get("room_name", room_id)
         return True
     except Exception:
@@ -518,7 +518,7 @@ def join_room(school_code, room_id):
 def mark_uploaded_done(school_code, room_id):
     if not firebase_available or not school_code or not room_id:
         return
-    db.child(f"rooms/{school_code}/{room_id}/participants/{st.session_state.session_id}").update({
+    db.reference(f"rooms/{school_code}/{room_id}/participants/{st.session_state.session_id}").update({
         "uploaded": True,
         "updated_at": int(time.time())
     })
@@ -529,7 +529,7 @@ def get_room_status(school_code, room_id):
     """
     if not firebase_available or not school_code or not room_id:
         return None, 0, 0
-    room_ref = db.child(f"rooms/{school_code}/{room_id}").get() or {}
+    room_ref = db.reference(f"rooms/{school_code}/{room_id}").get() or {}
     participants = room_ref.get("participants", {}) or {}
     ready = sum(1 for p in participants.values() if p.get("uploaded"))
     total = len(participants)
@@ -551,7 +551,7 @@ def verify_room_password(school_code, room_id, password):
         return False
     
     try:
-        room_info = db.child(f"rooms/{school_code}/{room_id}").get()
+        room_info = db.reference(f"rooms/{school_code}/{room_id}").get()
         if not room_info:
             return False
         
@@ -605,15 +605,15 @@ def reset_room(school_code, room_id, password=None):
         # 전체를 뒤져서 해당 room_id인 것만 지워야 하는 비효율이 있지만,
         # 현재 구조상 file_uploads/{school_code} 밑에 플랫하게 있음.
         # 따라서 키를 순회하며 확인해야 함.
-        files_ref = db.child(f"file_uploads/{school_code}")
+        files_ref = db.reference(f"file_uploads/{school_code}")
         files_data = files_ref.get()
         if files_data:
             for file_key, file_val in files_data.items():
                 if isinstance(file_val, dict) and file_val.get("room_id") == room_id:
-                    db.child(f"file_uploads/{school_code}/{file_key}").delete()
+                    db.reference(f"file_uploads/{school_code}/{file_key}").delete()
         
         # 3. 방 데이터(rooms) 삭제
-        db.child(f"rooms/{school_code}/{room_id}").delete()
+        db.reference(f"rooms/{school_code}/{room_id}").delete()
         
         # 4. 로컬 세션 클리어
         st.session_state.room_id = None
@@ -674,7 +674,7 @@ with st.sidebar:
             
             # 파일 업로드 정보 가져오기
             files_path = f"file_uploads/{school_code}"
-            files_data = db.child(files_path).get()
+            files_data = db.reference(files_path).get()
             
             if files_data:
                 unique_users = set()
