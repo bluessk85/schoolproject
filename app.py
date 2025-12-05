@@ -60,9 +60,14 @@ try:
                         'databaseURL': database_url,
                         'storageBucket': storage_bucket
                     })
+                
                 # Store bucket name globally for later use
                 global STORAGE_BUCKET_NAME
                 STORAGE_BUCKET_NAME = storage_bucket
+                
+                # Firebase 연결 성공 - 전역 변수 설정
+                firebase_available = True
+                db = firebase_rtdb.reference()
 
         except Exception as e:
             st.sidebar.error(f"Firebase Admin SDK 초기화 실패: {e}")
