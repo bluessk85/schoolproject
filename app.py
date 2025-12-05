@@ -119,7 +119,12 @@ if 'school_code' not in st.session_state:
 
 # 협업 방 관련 상태
 if 'room_id' not in st.session_state:
-    st.session_state.room_id = None
+    # URL에서 room_id 복원 시도
+    query_params = st.query_params
+    if 'room_id' in query_params:
+        st.session_state.room_id = query_params['room_id']
+    else:
+        st.session_state.room_id = None
 if 'room_required_count' not in st.session_state:
     st.session_state.room_required_count = 0
 if 'room_name' not in st.session_state:
@@ -503,6 +508,8 @@ def join_room(school_code, room_id):
         # 방 이름 저장
         room_info = db.reference(f"rooms/{school_code}/{room_id}").get() or {}
         st.session_state.room_name = room_info.get("room_name", room_id)
+        # URL에 room_id 저장
+        st.query_params['room_id'] = room_id
         return True
     except Exception:
         return False
@@ -971,7 +978,18 @@ if selected_project == '이수 가능한 날짜 찾기':
             is_owner = (creator_id == st.session_state.session_id)
             
             # 방 관리 UI를 expander로 변경
-            with st.expander("🔧 방 관리", expanded=False):
+            with st.expander("⚙️ 방 관리", expanded=False):
+                # 방 나가기 버튼
+                if st.button("🚪 방 나가기"):
+                    st.session_state.room_id = None
+                    st.session_state.room_name = None
+                    # URL에서 room_id 제거
+                    if 'room_id' in st.query_params:
+                        del st.query_params['room_id']
+                    st.success("방에서 나갔습니다.")
+                    st.rerun()
+                
+                st.divider()
                 if has_password:
                     st.info("🔒 이 방은 비밀번호로 보호되고 있습니다.")
                     if is_owner:
@@ -1003,6 +1021,9 @@ if selected_project == '이수 가능한 날짜 찾기':
                             if reset_room(school_code, st.session_state.room_id):
                                 st.success("방과 관련된 모든 파일이 삭제되었습니다.")
                                 st.session_state.room_id = None
+                                # URL에서 room_id 제거
+                                if 'room_id' in st.query_params:
+                                    del st.query_params['room_id']
                                 st.rerun()
                     else:
                         st.info(f"방장: {creator_id[:8]}..." if creator_id else "방장 미상")
@@ -1048,9 +1069,10 @@ if selected_project == '이수 가능한 날짜 찾기':
         
         # 방에 참여 중이면 해당 방의 파일 자동 로드
         if firebase_available and st.session_state.room_id:
-            # 방의 파일이 로드되지 않았으면 로드
-            load_key = f"room_files_loaded_{st.session_state.room_id}"
-            if load_key not in st.session_state:
+            # 파일이 로드되지 않았으면 로드 (세션 상태가 비어있을 때)
+            current_files = st.session_state.school_dataframes.get(school_code, [])
+            
+            if len(current_files) == 0:  # 파일이 없으면 로드
                 with st.spinner("방의 업로드된 파일을 불러오는 중..."):
                     all_files = get_all_uploaded_files()
                     # 현재 방의 파일만 필터링
@@ -1080,9 +1102,6 @@ if selected_project == '이수 가능한 날짜 찾기':
                         
                         if loaded_count > 0:
                             st.success(f"✅ {loaded_count}개의 파일을 불러왔습니다!")
-                    
-                    # 로드 완료 표시
-                    st.session_state[load_key] = True
 
     # 파일 업로드
     uploaded_files = st.file_uploader("엑셀 파일 업로드 (여러 파일 가능)", type=["xlsx", "xls"], accept_multiple_files=True)
