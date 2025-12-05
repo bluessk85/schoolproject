@@ -55,15 +55,15 @@ try:
                 cred_dict['private_key'] = cred_dict['private_key'].replace('\\n', '\n')
                 cred = credentials.Certificate(cred_dict)
                 
-                if not firebase_admin._apps:
-                    firebase_admin.initialize_app(cred, {
-                        'databaseURL': database_url,
-                        'storageBucket': storage_bucket
-                    })
-                
-                firebase_available = True
-                db = firebase_rtdb
-                st.sidebar.success("Firebase Admin SDK 로드 및 연결 성공!")
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred, {
+                'databaseURL': database_url,
+                'storageBucket': storage_bucket
+            })
+        # Store bucket name globally for later use
+        global STORAGE_BUCKET_NAME
+        STORAGE_BUCKET_NAME = storage_bucket
+
 
         except Exception as e:
             st.sidebar.error(f"Firebase Admin SDK 초기화 실패: {e}")
@@ -583,7 +583,7 @@ def reset_room(school_code, room_id, password=None):
         logging.info(f"방 초기화 시작: {room_id}")
         
         # 1. 스토리지 파일 삭제
-        bucket = storage.bucket()
+        bucket = storage.bucket(name=STORAGE_BUCKET_NAME)
         # 해당 방의 폴더 전체 삭제 (uploads/{school_code}/{room_id}/...)
         prefix = f"uploads/{school_code}/{room_id}/"
         blobs = bucket.list_blobs(prefix=prefix)
