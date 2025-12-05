@@ -347,7 +347,27 @@ def download_old_session_file(user_id, filename):
     except:
         pass
     return None
-
+def reset_session():
+    """Reset local Streamlit session state and optionally clear Firebase room data.
+    Returns True on success, False on failure.
+    """
+    try:
+        # Reset processing step
+        st.session_state.processing_step = "start"
+        # Clear stored dataframes and related info
+        for key in ["school_dataframes", "school_vacations", "school_excluded_dates"]:
+            if key in st.session_state:
+                del st.session_state[key]
+        # Clear room related session state
+        st.session_state.room_id = None
+        st.session_state.room_name = None
+        st.session_state.room_required_count = 0
+        # Optionally, you could also clear the Firebase room data here using reset_room,
+        # but that would delete shared data. For a simple local reset we just clear the state.
+        return True
+    except Exception as e:
+        st.error(f"세션 초기화 중 오류 발생: {e}")
+        return False
 # 모든 업로드된 파일 가져오기
 def get_all_uploaded_files():
     global firebase_available
@@ -432,20 +452,44 @@ def get_rooms_for_school(school_code):
     except Exception:
         return {}
 
-def create_room(school_code, required_count, room_name):
+def create_room(school_code, required_count, room_name, room_password=None):
+    """
+    방을 생성하고 비밀번호를 설정합니다.
+    
+    Args:
+        school_code: 학교 코드
+        required_count: 필요 인원 수
+        room_name: 방 이름
+        room_password: 방 비밀번호 (선택사항)
+    
+    Returns:
+        room_id: 생성된 방 ID, 실패 시 None
+    """
     if not firebase_available or not school_code:
         return None
     room_id = f"room_{int(time.time())}_{random.randint(1000, 9999)}"
     try:
-        db.reference(f"rooms/{school_code}/{room_id}").set({
+        room_data = {
             "required_count": int(required_count),
             "created_at": int(time.time()),
             "created_by": st.session_state.session_id,
             "room_name": room_name or room_id,
             "state": "start"
-        })
+        }
+        
+        # 비밀번호가 제공된 경우 해시하여 저장
+        if room_password and room_password.strip():
+            import hashlib
+            hashed_password = hashlib.sha256(room_password.strip().encode()).hexdigest()
+            room_data["password_hash"] = hashed_password
+            room_data["has_password"] = True
+        else:
+            room_data["has_password"] = False
+            
+        db.reference(f"rooms/{school_code}/{room_id}").set(room_data)
         return room_id
-    except Exception:
+    except Exception as e:
+        logging.error(f"방 생성 실패: {e}")
         return None
 
 def join_room(school_code, room_id):
@@ -487,11 +531,52 @@ def get_room_status(school_code, room_id):
     total = len(participants)
     return room_ref, ready, total
 
+def verify_room_password(school_code, room_id, password):
+    """
+    방 비밀번호를 확인합니다.
+    
+    Args:
+        school_code: 학교 코드
+        room_id: 방 ID
+        password: 확인할 비밀번호
+    
+    Returns:
+        True if password matches or no password set, False otherwise
+    """
+    if not firebase_available or not school_code or not room_id:
+        return False
+    
+    try:
+        room_info = db.reference(f"rooms/{school_code}/{room_id}").get()
+        if not room_info:
+            return False
+        
+        # 비밀번호가 설정되지 않은 방인 경우
+        if not room_info.get("has_password", False):
+            return True
+        
+        # 비밀번호 확인
+        if password and password.strip():
+            import hashlib
+            hashed_input = hashlib.sha256(password.strip().encode()).hexdigest()
+            stored_hash = room_info.get("password_hash", "")
+            return hashed_input == stored_hash
+        
+        return False
+    except Exception as e:
+        logging.error(f"비밀번호 확인 실패: {e}")
+        return False
+
 # 방 초기화 (강력한 cleanup 포함)
-def reset_room(school_code, room_id):
+def reset_room(school_code, room_id, password=None):
     global firebase_available
     
     if not firebase_available or not school_code or not room_id:
+        return False
+    
+    # 비밀번호 확인
+    if not verify_room_password(school_code, room_id, password):
+        st.error("비밀번호가 일치하지 않습니다.")
         return False
         
     try:
@@ -828,7 +913,9 @@ if selected_project == '이수 가능한 날짜 찾기':
                 participants = info.get("participants", {}) or {}
                 ready = sum(1 for p in participants.values() if p.get("uploaded"))
                 name = info.get("room_name", rid)
-                label = f"{name} ({rid}) - 필요 {req}명 / 완료 {ready}명"
+                has_password = info.get("has_password", False)
+                password_icon = "🔒 " if has_password else ""
+                label = f"{password_icon}{name} ({rid}) - 필요 {req}명 / 완료 {ready}명"
                 room_options.append(rid)
                 room_labels[rid] = label
             
@@ -843,15 +930,21 @@ if selected_project == '이수 가능한 날짜 찾기':
             with join_col1:
                 required_input = st.number_input("새 방 생성 시 필요 인원 수", min_value=1, max_value=30, value=3, step=1)
                 room_name_input = st.text_input("새 방 이름", placeholder="예) 3학년 전학공 방")
+                room_password_input = st.text_input("방 비밀번호 (선택사항)", type="password", 
+                                                   placeholder="방 삭제 시 필요한 비밀번호를 설정하세요",
+                                                   help="비밀번호를 설정하면 해당 비밀번호를 아는 사람만 방을 삭제할 수 있습니다.")
             with join_col2:
                 if st.button("새 방 생성"):
                     if firebase_available:
-                        new_room = create_room(school_code, required_input, room_name_input.strip())
+                        new_room = create_room(school_code, required_input, room_name_input.strip(), room_password_input)
                         if new_room:
                             st.session_state.room_id = new_room
                             st.session_state.room_required_count = int(required_input)
                             join_room(school_code, new_room)
-                            st.success(f"새 방 생성 및 참여 완료: {new_room}")
+                            if room_password_input and room_password_input.strip():
+                                st.success(f"새 방 생성 및 참여 완료: {new_room} (비밀번호 설정됨)")
+                            else:
+                                st.success(f"새 방 생성 및 참여 완료: {new_room}")
                             st.rerun()
                         else:
                             st.error("방 생성에 실패했습니다. 네트워크 상태를 확인하세요.")
@@ -876,20 +969,48 @@ if selected_project == '이수 가능한 날짜 찾기':
             st.session_state.room_name = room_name
             st.info(f"현재 방: {room_name} ({st.session_state.room_id}) | 업로드 완료 {ready_cnt}/{room_info.get('required_count', st.session_state.room_required_count)}명 (참여 {total_cnt}명)")
             
-            # 방장(생성자)에게만 삭제 권한 부여
+            # 방 관리 섹션 (모든 사용자가 볼 수 있지만, 비밀번호가 있으면 비밀번호를 아는 사람만 삭제 가능)
+            has_password = room_info.get("has_password", False) if room_info else False
             creator_id = room_info.get("created_by") if room_info else None
             is_owner = (creator_id == st.session_state.session_id)
             
-            if is_owner:
-                st.write("### 👑 방 관리")
-                st.info("당신은 이 방의 방장입니다.")
-                if st.button("🚨 이 방 삭제 및 초기화"):
-                    if reset_room(school_code, st.session_state.room_id):
-                        st.success("방과 관련된 모든 파일이 삭제되었습니다.")
-                        st.session_state.room_id = None
-                        st.rerun()
-            else:
-                 st.write(f"방장: {creator_id[:8]}..." if creator_id else "방장 미상")
+            # 방 관리 UI를 expander로 변경
+            with st.expander("🔧 방 관리", expanded=False):
+                if has_password:
+                    st.info("🔒 이 방은 비밀번호로 보호되고 있습니다.")
+                    if is_owner:
+                        st.success("👑 당신은 이 방의 방장입니다.")
+                    
+                    # 비밀번호 입력 필드
+                    delete_password = st.text_input(
+                        "방 삭제 비밀번호", 
+                        type="password",
+                        key="delete_room_password",
+                        placeholder="방 생성 시 설정한 비밀번호를 입력하세요"
+                    )
+                    
+                    if st.button("🚨 이 방 삭제 및 초기화", type="primary"):
+                        if delete_password and delete_password.strip():
+                            if reset_room(school_code, st.session_state.room_id, delete_password):
+                                st.success("방과 관련된 모든 파일이 삭제되었습니다.")
+                                st.session_state.room_id = None
+                                st.rerun()
+                            # reset_room 내부에서 비밀번호 오류 메시지 출력
+                        else:
+                            st.warning("비밀번호를 입력해주세요.")
+                else:
+                    # 비밀번호가 없는 경우 - 방장만 삭제 가능
+                    if is_owner:
+                        st.success("👑 당신은 이 방의 방장입니다.")
+                        st.warning("⚠️ 이 방은 비밀번호로 보호되지 않습니다. 방장만 삭제할 수 있습니다.")
+                        if st.button("🚨 이 방 삭제 및 초기화", type="primary"):
+                            if reset_room(school_code, st.session_state.room_id):
+                                st.success("방과 관련된 모든 파일이 삭제되었습니다.")
+                                st.session_state.room_id = None
+                                st.rerun()
+                    else:
+                        st.info(f"방장: {creator_id[:8]}..." if creator_id else "방장 미상")
+                        st.warning("방 삭제는 방장만 가능합니다.")
 
     # 업로드된 파일 목록 표시
     if firebase_available and st.session_state.processing_step == 'start':
@@ -1060,11 +1181,36 @@ if selected_project == '이수 가능한 날짜 찾기':
         else:
             st.info("아직 제외된 날짜가 없습니다.")
 
-    # 2025년과 2026년 한국 공휴일 정보
+    # 한국 공휴일 정보를 동적으로 가져오기
+    # 현재 날짜를 기준으로 연도 판단 (3-2월 학년도 기준)
     cal = SouthKorea()
-    holidays_2025 = cal.holidays(2025)
-    holidays_2026 = cal.holidays(2026)
-    all_holidays = holidays_2025 + holidays_2026
+    current_date = datetime.now()
+    
+    # 현재가 3월 이후면 현재 연도와 다음 연도, 3월 이전이면 전년도와 현재 연도
+    if current_date.month >= 3:
+        year_start = current_date.year
+        year_end = current_date.year + 1
+    else:
+        year_start = current_date.year - 1
+        year_end = current_date.year
+    
+    holidays_start = cal.holidays(year_start)
+    holidays_end = cal.holidays(year_end)
+    all_holidays = holidays_start + holidays_end
+    
+    st.info(f"📅 공휴일 자동 제외: {year_start}년, {year_end}년 대한민국 공휴일이 자동으로 제외됩니다.")
+    
+    # 공휴일 목록 표시 (접이식)
+    with st.expander("🗓️ 제외되는 공휴일 목록 보기", expanded=False):
+        st.write(f"### {year_start}년 공휴일")
+        for holiday_date, holiday_name in sorted(holidays_start):
+            st.write(f"- {holiday_date.strftime('%Y년 %m월 %d일')}: {holiday_name}")
+        
+        st.write(f"### {year_end}년 공휴일")
+        for holiday_date, holiday_name in sorted(holidays_end):
+            st.write(f"- {holiday_date.strftime('%Y년 %m월 %d일')}: {holiday_name}")
+        
+        st.info(f"총 {len(all_holidays)}개의 공휴일이 자동으로 제외됩니다.")
 
     # 날짜 객체 정규화 함수
     def normalize_date(date_obj):
@@ -1245,8 +1391,17 @@ if selected_project == '이수 가능한 날짜 찾기':
 
     # 날짜 처리 함수 수정
     def process_dates(existing_dates, school_code):
-        start_date = datetime(2025, 3, 1)
-        end_date = datetime(2026, 2, 28)
+        # 현재 날짜를 기준으로 학년도 시작/종료일 계산
+        current_date = datetime.now()
+        if current_date.month >= 3:
+            # 3월 이후: 현재 연도 3월 ~ 다음 연도 2월
+            start_date = datetime(current_date.year, 3, 1)
+            end_date = datetime(current_date.year + 1, 2, 28)
+        else:
+            # 3월 이전: 전년도 3월 ~ 현재 연도 2월
+            start_date = datetime(current_date.year - 1, 3, 1)
+            end_date = datetime(current_date.year, 2, 28)
+        
         date_range = pd.date_range(start=start_date, end=end_date)
         available_days = []
         
@@ -1651,7 +1806,7 @@ if selected_project == '이수 가능한 날짜 찾기':
                             # 가용 날짜 개수 표시
                             st.info(f"총 {len(available_days_df)}개의 이용 가능한 날짜가 있습니다.")
 
-                        # 월별 통계 (2025-2026년 데이터 사용)
+                        # 월별 통계 (현재 학년도 데이터 사용)
                         st.write("### 월별 이용 가능한 날짜 수")
                         monthly_stats = available_days_df['날짜'].dt.to_period('M').value_counts().sort_index()
                         monthly_stats.index = monthly_stats.index.strftime('%Y-%m')
