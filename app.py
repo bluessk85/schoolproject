@@ -645,6 +645,82 @@ def reset_session_legacy():
     # ... 코드 유지 ...
     pass
 
+# 관리자 전용: 모든 Firebase 데이터 삭제
+def admin_reset_all_firebase_data():
+    """
+    관리자 전용: Firebase의 모든 데이터를 영구적으로 삭제합니다.
+    - Storage: 모든 업로드된 파일
+    - Realtime DB: rooms, file_uploads, sessions 전체
+    - 로컬 세션 상태
+    
+    Returns:
+        tuple: (success: bool, result: int or str)
+               success=True이면 result는 삭제된 파일 수
+               success=False이면 result는 에러 메시지
+    """
+    global firebase_available
+    
+    if not firebase_available:
+        return False, "Firebase가 연결되지 않았습니다."
+    
+    try:
+        logging.warning("⚠️ 관리자 전체 데이터 삭제 시작")
+        
+        # 1. Firebase Storage 모든 파일 삭제
+        try:
+            bucket = storage.bucket()
+            blobs = list(bucket.list_blobs())
+            deleted_count = 0
+            
+            for blob in blobs:
+                try:
+                    blob.delete()
+                    deleted_count += 1
+                    logging.info(f"Storage 파일 삭제: {blob.name}")
+                except Exception as e:
+                    logging.warning(f"Blob 삭제 실패: {blob.name} - {e}")
+            
+            logging.info(f"✅ Storage 파일 {deleted_count}개 삭제 완료")
+        except Exception as e:
+            logging.error(f"Storage 삭제 중 오류: {e}")
+            deleted_count = 0
+        
+        # 2. Realtime Database 전체 노드 삭제
+        try:
+            db.reference("rooms").delete()
+            logging.info("✅ rooms 노드 삭제 완료")
+        except Exception as e:
+            logging.warning(f"rooms 삭제 중 오류: {e}")
+        
+        try:
+            db.reference("file_uploads").delete()
+            logging.info("✅ file_uploads 노드 삭제 완료")
+        except Exception as e:
+            logging.warning(f"file_uploads 삭제 중 오류: {e}")
+        
+        try:
+            db.reference("sessions").delete()
+            logging.info("✅ sessions 노드 삭제 완료")
+        except Exception as e:
+            logging.warning(f"sessions 삭제 중 오류: {e}")
+        
+        # 3. 로컬 세션 상태 전체 초기화
+        keys_to_delete = list(st.session_state.keys())
+        for key in keys_to_delete:
+            try:
+                del st.session_state[key]
+            except Exception:
+                pass
+        
+        logging.warning(f"⚠️ 관리자 전체 데이터 삭제 완료 (Storage 파일 {deleted_count}개)")
+        return True, deleted_count
+        
+    except Exception as e:
+        error_msg = f"전체 데이터 삭제 중 오류 발생: {e}"
+        logging.error(error_msg)
+        return False, error_msg
+
+
 # 페이지 로드 시 사용자 상태 업데이트
 update_user_status()
 
@@ -783,19 +859,61 @@ with st.sidebar:
             > 주의: 이 설정은 모든 사용자에게 읽기/쓰기 권한을 부여합니다. 실제 운영 환경에서는 더 제한적인 규칙을 사용하세요.
             """)
     
-    # 세션 초기화 버튼
-    if st.button("모든 데이터 초기화"):
-        target_school = st.session_state.get("school_code")
-        if firebase_available and reset_session():
-            st.success(f"모든 데이터가 초기화되었습니다. (학교: {target_school or '선택 안 함'})")
-            st.rerun()
-        else:
-            # Firebase 없이도 로컬 세션 상태 초기화
-            st.session_state.processing_step = "start"
-            if "school_dataframes" in st.session_state:
-                del st.session_state.school_dataframes
-            st.success("로컬 데이터가 초기화되었습니다.")
-            st.rerun()
+    # 관리자 전용: 모든 데이터 초기화 (비밀번호 보호)
+    with st.expander("⚠️ 관리자: 모든 데이터 초기화", expanded=False):
+        st.warning("⚠️ **위험:** 이 기능은 모든 Firebase 데이터를 영구적으로 삭제합니다!")
+        st.markdown("""
+        **삭제될 데이터:**
+        - 🗃️ Firebase Storage: 모든 업로드된 파일
+        - 📊 Realtime Database: rooms, file_uploads, sessions
+        - 💾 로컬 세션 상태
+        
+        **⚠️ 복구 불가능합니다!**
+        """)
+        
+        admin_password = st.text_input(
+            "관리자 비밀번호", 
+            type="password", 
+            key="admin_pwd",
+            placeholder="비밀번호 입력"
+        )
+        
+        if st.button("🗑️ 전체 데이터 삭제 실행", type="primary"):
+            if admin_password == "3518":
+                if firebase_available:
+                    # 2단계 확인 - 세션 상태로 확인 단계 저장
+                    if 'admin_confirm_step' not in st.session_state:
+                        st.session_state.admin_confirm_step = False
+                    
+                    st.session_state.admin_confirm_step = True
+                    st.error("⚠️ **최종 확인:** 모든 방, 파일, 메타데이터가 영구 삭제됩니다!")
+                    st.error("정말로 계속하시겠습니까?")
+                else:
+                    st.error("❌ Firebase가 연결되지 않았습니다.")
+            elif admin_password:
+                st.error("❌ 비밀번호가 올바르지 않습니다.")
+            else:
+                st.warning("비밀번호를 입력해주세요.")
+        
+        # 최종 확인 버튼 (첫 번째 버튼을 클릭한 경우에만 표시)
+        if st.session_state.get('admin_confirm_step', False):
+            if st.button("⚠️ 확인했습니다. 모든 데이터를 삭제합니다.", type="secondary"):
+                with st.spinner("모든 데이터를 삭제하는 중..."):
+                    success, result = admin_reset_all_firebase_data()
+                    
+                if success:
+                    st.success(f"✅ 모든 Firebase 데이터 삭제 완료! (Storage 파일 {result}개 삭제)")
+                    # 확인 단계 초기화
+                    if 'admin_confirm_step' in st.session_state:
+                        del st.session_state.admin_confirm_step
+                    time.sleep(1)  # 메시지를 볼 시간 제공
+                    st.rerun()
+                else:
+                    st.error(f"❌ 삭제 실패: {result}")
+                    # 확인 단계 초기화
+                    if 'admin_confirm_step' in st.session_state:
+                        del st.session_state.admin_confirm_step
+
 
 # 사이드바 추가
 st.sidebar.title('학교 생활 도우미')
@@ -1044,10 +1162,22 @@ if selected_project == '이수 가능한 날짜 찾기':
     # 업로드된 파일 목록 표시
     if firebase_available and st.session_state.processing_step == 'start':
         all_files = get_all_uploaded_files()
-        if all_files:
-            st.write("### 현재 업로드된 파일 목록")
+        # 현재 방의 파일만 필터링
+        current_room_id = st.session_state.get("room_id")
+        if current_room_id:
+            # 방이 설정되어 있으면 해당 방의 파일만 표시
+            display_files = [f for f in all_files if f.get("room_id") == current_room_id]
+        else:
+            # 방이 없으면 모든 파일 표시 (하위 호환성)
+            display_files = all_files
+            
+        if display_files:
+            if current_room_id:
+                st.write(f"### 현재 방({st.session_state.get('room_name', current_room_id)})의 업로드된 파일 목록")
+            else:
+                st.write("### 현재 업로드된 파일 목록")
             file_info = []
-            for file in all_files:
+            for file in display_files:
                 upload_ts = file.get("upload_time", 0)
                 try:
                     upload_ts = float(upload_ts)
@@ -1169,7 +1299,16 @@ if selected_project == '이수 가능한 날짜 찾기':
     if firebase_available and st.session_state.processing_step == 'converting' and 'all_files_loaded' not in st.session_state:
         with st.spinner("다른 사용자가 업로드한 파일을 로드 중..."):
             all_files = get_all_uploaded_files()
-            for file in all_files:
+            # 현재 방의 파일만 필터링
+            current_room_id = st.session_state.get("room_id")
+            if current_room_id:
+                # 방이 설정되어 있으면 해당 방의 파일만 로드
+                room_files = [f for f in all_files if f.get("room_id") == current_room_id]
+            else:
+                # 방이 없으면 모든 파일 로드 (하위 호환성)
+                room_files = all_files
+            
+            for file in room_files:
                 # 이미 로컬에 있는 파일은 건너뜀
                 already_loaded = False
                 if school_code in st.session_state.school_dataframes:
@@ -1189,7 +1328,10 @@ if selected_project == '이수 가능한 날짜 찾기':
                         })
         
         st.session_state.all_files_loaded = True
-        st.info("모든 공유 파일이 로드되었습니다.")
+        if current_room_id:
+            st.info(f"방 '{st.session_state.get('room_name', current_room_id)}'의 모든 공유 파일이 로드되었습니다.")
+        else:
+            st.info("모든 공유 파일이 로드되었습니다.")
 
     # 업로드된 데이터 초기화 버튼
     if school_code in st.session_state.school_dataframes and st.session_state.school_dataframes[school_code]:
@@ -1204,8 +1346,8 @@ if selected_project == '이수 가능한 날짜 찾기':
     
     col1, col2 = st.columns(2)
     with col1:
-        summer_start = st.date_input("여름 방학 시작일", value=datetime(2025, 7, 25))
-        summer_end = st.date_input("여름 방학 종료일", value=datetime(2025, 8, 18))
+        summer_start = st.date_input("여름 방학 시작일", value=datetime(2025, 7, 26))
+        summer_end = st.date_input("여름 방학 종료일", value=datetime(2025, 8, 19))
     with col2:
         winter_start = st.date_input("겨울 방학 시작일", value=datetime(2026, 1, 1))
         winter_end = st.date_input("겨울 방학 종료일", value=datetime(2026, 2, 28))
