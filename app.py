@@ -1246,25 +1246,35 @@ if selected_project == '이수 가능한 날짜 찾기':
                             st.success(f"✅ {loaded_count}개의 파일을 불러왔습니다!")
 
     # 파일 업로드
+    st.subheader("📤 파일 업로드")
+    
+    # 중요 안내 메시지 (항상 표시)
+    st.info("ℹ️ **사용 방법:**\n1. 아래에서 파일을 선택하세요\n2. 파일이 맞는지 확인하세요 (수정이 필요하면 다시 선택 가능)\n3. **'📤 파일 저장 및 공유하기' 버튼을 꼭 눌러주세요!** (이 버튼을 눌러야 다른 사람들도 볼 수 있습니다)")
+    
     uploaded_files = st.file_uploader("엑셀 파일 업로드 (여러 파일 가능)", type=["xlsx", "xls"], accept_multiple_files=True)
+    
+    # 파일을 선택했지만 아직 저장하지 않은 경우 경고 표시
+    if uploaded_files:
+        st.warning("⚠️ **중요:** 파일을 선택했습니다! 아래 '📤 파일 저장 및 공유하기' 버튼을 눌러야 업로드가 완료됩니다!")
+        st.write(f"선택된 파일: {', '.join([f.name for f in uploaded_files])}")
 
     # 협업 방 업로드 완료 표시 (이 위치가 자연스러운 UI 흐름)
     if firebase_available and st.session_state.room_id:
-        with st.expander("내 업로드 완료 표시", expanded=False):
+        with st.expander("✅ 내 업로드 완료 표시", expanded=False):
             st.write("모든 파일 업로드 후 완료 버튼을 눌러주세요.")
-            if st.button("내 업로드 완료", key="mark_uploaded_done_button"):
+            if st.button("✅ 내 업로드 완료", key="mark_uploaded_done_button"):
                 mark_uploaded_done(st.session_state.school_code, st.session_state.room_id)
                 st.success("업로드 완료 상태가 기록되었습니다.")
                 st.rerun()
 
     # 현재 업로드된 파일 목록 표시
     if school_code and school_code in st.session_state.school_dataframes and st.session_state.school_dataframes[school_code]:
-        st.write("### 현재 업로드된 파일")
+        st.write("### 💾 저장된 파일 목록")
         for idx, file_info in enumerate(st.session_state.school_dataframes[school_code]):
-            st.write(f"{idx+1}. {file_info.get('filename', '알 수 없는 파일')}")
+            st.write(f"{idx+1}. ✓ {file_info.get('filename', '알 수 없는 파일')}")
 
     # 업로드 버튼 (Firebase 저장용)
-    upload_button = st.button("파일 저장 및 공유하기")
+    upload_button = st.button("📤 파일 저장 및 공유하기", type="primary", use_container_width=True)
     if upload_button:
         if not school_code:
             st.error("먼저 학교를 선택해주세요.")
