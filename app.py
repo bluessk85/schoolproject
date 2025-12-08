@@ -117,14 +117,9 @@ if 'school_list' not in st.session_state:
 if 'school_code' not in st.session_state:
     st.session_state.school_code = None
 
-# 협업 방 관련 상태
+# 협업 방 관련 상태 (URL 자동 복원 제거 - 명시적 선택만 허용)
 if 'room_id' not in st.session_state:
-    # URL에서 room_id 복원 시도
-    query_params = st.query_params
-    if 'room_id' in query_params:
-        st.session_state.room_id = query_params['room_id']
-    else:
-        st.session_state.room_id = None
+    st.session_state.room_id = None
 if 'room_required_count' not in st.session_state:
     st.session_state.room_required_count = 0
 if 'room_name' not in st.session_state:
@@ -520,8 +515,6 @@ def join_room(school_code, room_id):
         # 방 이름 저장
         room_info = db.reference(f"rooms/{school_code}/{room_id}").get() or {}
         st.session_state.room_name = room_info.get("room_name", room_id)
-        # URL에 room_id 저장
-        st.query_params['room_id'] = room_id
         return True
     except Exception:
         return False
@@ -1126,9 +1119,6 @@ if selected_project == '이수 가능한 날짜 찾기':
                 if st.button("🚪 방 나가기"):
                     st.session_state.room_id = None
                     st.session_state.room_name = None
-                    # URL에서 room_id 제거
-                    if 'room_id' in st.query_params:
-                        del st.query_params['room_id']
                     st.success("방에서 나갔습니다.")
                     st.rerun()
                 
@@ -1164,9 +1154,6 @@ if selected_project == '이수 가능한 날짜 찾기':
                             if reset_room(school_code, st.session_state.room_id):
                                 st.success("방과 관련된 모든 파일이 삭제되었습니다.")
                                 st.session_state.room_id = None
-                                # URL에서 room_id 제거
-                                if 'room_id' in st.query_params:
-                                    del st.query_params['room_id']
                                 st.rerun()
                     else:
                         st.info(f"방장: {creator_id[:8]}..." if creator_id else "방장 미상")
