@@ -1130,10 +1130,10 @@ if selected_project == '이수 가능한 날짜 찾기':
                                 else:
                                     st.success(f"새 방 생성 및 참여 완료: {new_room}")
                                 st.rerun()
-                            else:
-                                st.error("방 생성에 실패했습니다. 네트워크 상태를 확인하세요.")
+                                else:
+                                    st.error("방 생성에 실패했습니다. 네트워크 상태를 확인하세요.")
                         else:
-                        st.warning("Firebase 연결이 필요합니다.")
+                            st.warning("Firebase 연결이 필요합니다.")
         
         # 참여/완료 상태 표시
         if firebase_available and st.session_state.room_id:
