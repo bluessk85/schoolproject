@@ -1037,97 +1037,102 @@ if selected_project == '이수 가능한 날짜 찾기':
         st.subheader("2-1. 전학공 생성")
         school_code = st.session_state.school_code
         
-        with st.expander("방 목록 보기 / 생성하기", expanded=True):
-            rooms = get_rooms_for_school(school_code) if firebase_available else {}
-            room_options = []
-            room_labels = {}
-            for rid, info in rooms.items():
-                req = info.get("required_count", 0)
-                participants = info.get("participants", {}) or {}
-                ready = sum(1 for p in participants.values() if p.get("uploaded"))
-                name = info.get("room_name", rid)
-                has_password = info.get("has_password", False)
-                password_icon = "🔒 " if has_password else ""
-                label = f"{password_icon}{name} ({rid}) - 필요 {req}명 / 완료 {ready}명"
-                room_options.append(rid)
-                room_labels[rid] = label
-            
-            selected_room = st.selectbox(
-                "기존 방 선택",
-                options=room_options if room_options else ["없음"],
-                format_func=lambda x: room_labels.get(x, x),
-                key="room_select_box"
-            )
-            
-            # 기존 방 참여
-            if firebase_available and selected_room != "없음":
-                st.markdown("---")
-                st.subheader("📥 기존 방 참여")
+        # 방 선택/생성 UI는 방에 참여하지 않은 경우에만 표시
+        if not st.session_state.room_id:
+            with st.expander("방 목록 보기 / 생성하기", expanded=True):
+                rooms = get_rooms_for_school(school_code) if firebase_available else {}
+                room_options = []
+                room_labels = {}
+                for rid, info in rooms.items():
+                    req = info.get("required_count", 0)
+                    participants = info.get("participants", {}) or {}
+                    ready = sum(1 for p in participants.values() if p.get("uploaded"))
+                    name = info.get("room_name", rid)
+                    has_password = info.get("has_password", False)
+                    password_icon = "🔒 " if has_password else ""
+                    label = f"{password_icon}{name} ({rid}) - 필요 {req}명 / 완료 {ready}명"
+                    room_options.append(rid)
+                    room_labels[rid] = label
                 
-                # 비밀번호가 필요한 방인지 확인
-                room_info = get_room_status(school_code, selected_room)[0]
-                has_password = room_info.get("has_password", False) if room_info else False
+                selected_room = st.selectbox(
+                    "기존 방 선택",
+                    options=room_options if room_options else ["없음"],
+                    format_func=lambda x: room_labels.get(x, x),
+                    key="room_select_box"
+                )
                 
-                if has_password:
-                    join_password = st.text_input(
-                        "방 비밀번호", 
-                        type="password",
-                        key="join_room_password",
-                        placeholder="이 방은 비밀번호로 보호되어 있습니다"
-                    )
+                # 기존 방 참여
+                if firebase_available and selected_room != "없음":
+                    st.markdown("---")
+                    st.subheader("📥 기존 방 참여")
                     
-                    if st.button("🔓 선택한 방 참여", use_container_width=True):
-                        if join_password and join_password.strip():
-                            if verify_room_password(school_code, selected_room, join_password):
-                                if join_room(school_code, selected_room):
-                                    st.session_state.room_id = selected_room
-                                    st.session_state.room_required_count = int(room_info.get("required_count", 0)) if room_info else 0
-                                    st.success(f"{selected_room} 방에 참여했습니다.")
-                                    st.rerun()
+                    # 비밀번호가 필요한 방인지 확인
+                    room_info = get_room_status(school_code, selected_room)[0]
+                    has_password = room_info.get("has_password", False) if room_info else False
+                    
+                    if has_password:
+                        join_password = st.text_input(
+                            "방 비밀번호", 
+                            type="password",
+                            key="join_room_password",
+                            placeholder="이 방은 비밀번호로 보호되어 있습니다"
+                        )
+                        
+                        if st.button("🔓 선택한 방 참여", use_container_width=True):
+                            if join_password and join_password.strip():
+                                if verify_room_password(school_code, selected_room, join_password):
+                                    if join_room(school_code, selected_room):
+                                        st.session_state.room_id = selected_room
+                                        st.session_state.room_required_count = int(room_info.get("required_count", 0)) if room_info else 0
+                                        st.success(f"{selected_room} 방에 참여했습니다.")
+                                        st.rerun()
+                                    else:
+                                        st.error("방 참여에 실패했습니다.")
                                 else:
-                                    st.error("방 참여에 실패했습니다.")
+                                    st.error("❌ 비밀번호가 일치하지 않습니다.")
                             else:
-                                st.error("❌ 비밀번호가 일치하지 않습니다.")
-                        else:
-                            st.warning("비밀번호를 입력해주세요.")
-                else:
-                    if st.button("📥 선택한 방 참여", use_container_width=True):
-                        if join_room(school_code, selected_room):
-                            room_info, ready, total = get_room_status(school_code, selected_room)
-                            st.session_state.room_id = selected_room
-                            st.session_state.room_required_count = int(room_info.get("required_count", 0)) if room_info else 0
-                            st.success(f"{selected_room} 방에 참여했습니다.")
-                            st.rerun()
-                        else:
-                            st.error("방 참여에 실패했습니다.")
-            
-            # 새 방 생성 섹션 (expander로 감싸기)
-            st.markdown("---")
-            with st.expander("➕ 새 방 생성하기", expanded=False):
-                st.info("💡 새로운 협업 방을 만들려면 아래 정보를 입력하고 '새 방 생성' 버튼을 눌러주세요.")
-                
-                required_input = st.number_input("필요 인원 수", min_value=1, max_value=30, value=3, step=1, key="new_room_required")
-                room_name_input = st.text_input("방 이름", placeholder="예) 3학년 전학공 방", key="new_room_name")
-                room_password_input = st.text_input("방 비밀번호 (선택사항)", type="password", 
-                                                   placeholder="방 삭제 시 필요한 비밀번호를 설정하세요",
-                                                   help="비밀번호를 설정하면 해당 비밀번호를 아는 사람만 방을 삭제할 수 있습니다.",
-                                                   key="new_room_password")
-                
-                if st.button("➕ 새 방 생성", use_container_width=True, type="primary"):
-                    if firebase_available:
-                        new_room = create_room(school_code, required_input, room_name_input.strip(), room_password_input)
-                        if new_room:
-                            st.session_state.room_id = new_room
-                            st.session_state.room_required_count = int(required_input)
-                            join_room(school_code, new_room)
-                            if room_password_input and room_password_input.strip():
-                                st.success(f"새 방 생성 및 참여 완료: {new_room} (비밀번호 설정됨)")
-                            else:
-                                st.success(f"새 방 생성 및 참여 완료: {new_room}")
-                            st.rerun()
-                        else:
-                            st.error("방 생성에 실패했습니다. 네트워크 상태를 확인하세요.")
+                                st.warning("비밀번호를 입력해주세요.")
                     else:
+                        if st.button("📥 선택한 방 참여", use_container_width=True):
+                            if join_room(school_code, selected_room):
+                                room_info, ready, total = get_room_status(school_code, selected_room)
+                                st.session_state.room_id = selected_room
+                                st.session_state.room_required_count = int(room_info.get("required_count", 0)) if room_info else 0
+                                st.success(f"{selected_room} 방에 참여했습니다.")
+                                st.rerun()
+                            else:
+                                st.error("방 참여에 실패했습니다.")
+                
+                # 새 방 생성 섹션 (expander로 감싸기)
+                st.markdown("---")
+                with st.expander("➕ 새 방 생성하기", expanded=False):
+                    st.info("💡 새로운 협업 방을 만들려면 아래 정보를 입력하고 '새 방 생성' 버튼을 눌러주세요.")
+                    
+                    required_input = st.number_input("필요 인원 수", min_value=1, max_value=30, value=3, step=1, key="new_room_required")
+                    room_name_input = st.text_input("방 이름", placeholder="예) 3학년 전학공 방", key="new_room_name")
+                    room_password_input = st.text_input("방 비밀번호 (선택사항)", type="password", 
+                                                       placeholder="방 삭제 시 필요한 비밀번호를 설정하세요",
+                                                       help="비밀번호를 설정하면 해당 비밀번호를 아는 사람만 방을 삭제할 수 있습니다.",
+                                                       key="new_room_password")
+                    
+                    # 버튼 클릭 여부를 명시적으로 체크
+                    create_button_clicked = st.button("➕ 새 방 생성", use_container_width=True, type="primary", key="create_new_room_button")
+                    
+                    if create_button_clicked:
+                        if firebase_available:
+                            new_room = create_room(school_code, required_input, room_name_input.strip(), room_password_input)
+                            if new_room:
+                                st.session_state.room_id = new_room
+                                st.session_state.room_required_count = int(required_input)
+                                join_room(school_code, new_room)
+                                if room_password_input and room_password_input.strip():
+                                    st.success(f"새 방 생성 및 참여 완료: {new_room} (비밀번호 설정됨)")
+                                else:
+                                    st.success(f"새 방 생성 및 참여 완료: {new_room}")
+                                st.rerun()
+                            else:
+                                st.error("방 생성에 실패했습니다. 네트워크 상태를 확인하세요.")
+                        else:
                         st.warning("Firebase 연결이 필요합니다.")
         
         # 참여/완료 상태 표시
