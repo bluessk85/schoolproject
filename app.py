@@ -198,12 +198,19 @@ def save_uploaded_file(uploaded_file, school_code, school_name):
     """
     logging.info(f"파일 처리 시작: {uploaded_file.name}")
     
+    # 고유 파일명 생성 (원본 파일명 + 타임스탬프 + 짧은 UUID)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    short_uuid = str(uuid.uuid4())[:8]  # UUID의 처음 8자만 사용
+    original_name = uploaded_file.name
+    name_parts = os.path.splitext(original_name)
+    unique_filename = f"{name_parts[0]}_{timestamp}_{short_uuid}{name_parts[1]}"
+    
     # 로컬 저장 디렉토리 생성
     save_folder = os.path.join("uploads", school_code)
     os.makedirs(save_folder, exist_ok=True)
     
-    # 저장 경로
-    save_path = os.path.join(save_folder, uploaded_file.name)
+    # 저장 경로 (고유 파일명 사용)
+    save_path = os.path.join(save_folder, unique_filename)
     
     # 로컬 파일 저장
     with open(save_path, "wb") as f:
@@ -232,17 +239,18 @@ def save_uploaded_file(uploaded_file, school_code, school_name):
                     if '날짜' in str(col) or 'date' in str(col).lower() or '일자' in str(col):
                         date_columns.append(col)
             
-            # 2. Firebase Storage에 파일 업로드
+            # 2. Firebase Storage에 파일 업로드 (고유 파일명 사용)
             bucket = storage.bucket()
             room_id_path = st.session_state.get("room_id", "common")
-            blob_path = f"uploads/{school_code}/{room_id_path}/{uploaded_file.name}" # 방 별로 경로 분리
+            blob_path = f"uploads/{school_code}/{room_id_path}/{unique_filename}"  # 고유 파일명 사용
             blob = bucket.blob(blob_path)
             
-            # 메타데이터 설정
+            # 메타데이터 설정 (원본 파일명 포함)
             blob.metadata = {
                 "upload_user": st.session_state.session_id,
                 "school_name": school_name,
-                "original_filename": uploaded_file.name,
+                "original_filename": original_name,  # 원본 파일명 저장
+                "unique_filename": unique_filename,   # 고유 파일명 저장
                 "room_id": st.session_state.get("room_id")
             }
             
@@ -251,7 +259,8 @@ def save_uploaded_file(uploaded_file, school_code, school_name):
             
             # 3. Realtime Database에 메타데이터 저장
             file_metadata = {
-                "filename": uploaded_file.name,
+                "filename": original_name,  # 사용자에게는 원본 파일명 표시
+                "unique_filename": unique_filename,  # 실제 저장된 파일명
                 "upload_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "upload_user": st.session_state.session_id,
                 "storage_path": blob_path,  # 스토리지 경로 저장
@@ -263,8 +272,8 @@ def save_uploaded_file(uploaded_file, school_code, school_name):
                 "room_name": st.session_state.get("room_name"),
             }
             
-            # 파일 키 생성 (특수문자 제외)
-            file_key = uploaded_file.name.replace('.', '_')
+            # 파일 키 생성 (고유 파일명 기반, 특수문자 제외)
+            file_key = unique_filename.replace('.', '_')
             db.reference(f"file_uploads/{school_code}/{file_key}").set(file_metadata)
             
             logging.info(f"Firebase RB에 메타데이터 저장 성공: {file_key}")
@@ -279,6 +288,8 @@ def save_uploaded_file(uploaded_file, school_code, school_name):
     
     return {
         "local_path": save_path,
+        "unique_filename": unique_filename,  # 고유 파일명 반환
+        "original_filename": original_name,   # 원본 파일명 반환
         "firebase_upload": firebase_upload_success
     }
 
@@ -1454,6 +1465,14 @@ if selected_project == '이수 가능한 날짜 찾기':
         """
         다양한 형식의 날짜 문자열에서 날짜를 추출하는 함수
         is_period_column: 출장기간/기간 컬럼 여부
+        
+        지원하는 날짜 형식:
+        - YYYY-MM-DD, YYYY.MM.DD, YYYY/MM/DD
+        - MM/DD/YYYY, DD.MM.YYYY
+        - YYYY년 MM월 DD일
+        - 엑셀 숫자 형식 (시리얼 날짜)
+        - 기간 형식 (YYYY.MM.DD HH:MM ~ YYYY.MM.DD HH:MM)
+        - datetime, Timestamp 객체
         """
         # NaN 또는 빈 값 처리
         if pd.isna(date_string) or date_string == "" or date_string is None:
@@ -1462,13 +1481,29 @@ if selected_project == '이수 가능한 날짜 찾기':
         # 문자열이 아닌 경우 처리
         if not isinstance(date_string, str):
             try:
+                # 숫자인 경우 엑셀 시리얼 날짜로 처리
+                if isinstance(date_string, (int, float)):
+                    # 엑셀의 날짜 시리얼 번호 (1900년 1월 1일부터의 일수)
+                    # 엑셀은 1900-01-01을 1로 시작 (단, 버그로 1900년을 윤년으로 처리)
+                    if 1 <= date_string <= 2958465:  # 유효 범위 (1900-01-01 ~ 9999-12-31)
+                        # pandas의 엑셀 날짜 변환 사용
+                        excel_epoch = datetime(1899, 12, 30)  # 엑셀 epoch
+                        result_date = excel_epoch + timedelta(days=date_string)
+                        logger.info(f"엑셀 시리얼 날짜 변환 성공: {date_string} -> {result_date.date()}")
+                        return result_date.date()
+                
                 # datetime, Timestamp 등의 객체를 datetime.date로 변환
                 return normalize_date(date_string)
-            except:
+            except Exception as e:
+                logger.debug(f"숫자/객체 변환 실패: {e}")
                 return None
         
         # 문자열 앞뒤 공백 제거
         date_string = date_string.strip()
+        
+        # 빈 문자열 체크
+        if not date_string:
+            return None
         
         try:
             # 0. 로깅용 정보 출력
@@ -1585,7 +1620,39 @@ if selected_project == '이수 가능한 날짜 찾기':
                 logger.debug(f"날짜 추출 실패 (pandas): {e}")
                 pass  # 변환 실패 시 다음 단계로
             
-            # 5. 출장/휴가 특수 패턴 처리
+            # 5. 한글 날짜 형식 처리 (예: "2025년 4월 23일")
+            korean_pattern = r'(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일'
+            match = re.search(korean_pattern, date_string)
+            if match:
+                try:
+                    year, month, day = map(int, match.groups())
+                    logger.debug(f"날짜 추출 성공 (한글): {year}-{month}-{day}")
+                    return datetime(year, month, day).date()
+                except Exception as e:
+                    logger.debug(f"날짜 추출 실패 (한글): {e}")
+                    pass
+            
+            # 6. MM/DD/YYYY 형식 처리
+            if '/' in date_string and date_string.count('/') == 2:
+                try:
+                    parts = date_string.split('/')
+                    if len(parts) == 3:
+                        # MM/DD/YYYY 형식인지 DD/MM/YYYY 형식인지 판단
+                        if len(parts[2]) == 4:  # 세 번째가 연도 (MM/DD/YYYY)
+                            month, day, year = map(int, parts)
+                        elif len(parts[0]) == 4:  # 첫 번째가 연도 (YYYY/MM/DD)
+                            year, month, day = map(int, parts)
+                        else:
+                            # 불명확한 경우 MM/DD/YYYY로 가정
+                            month, day, year = map(int, parts)
+                        
+                        logger.debug(f"날짜 추출 성공 (슬래시 구분): {year}-{month}-{day}")
+                        return datetime(year, month, day).date()
+                except Exception as e:
+                    logger.debug(f"날짜 추출 실패 (슬래시 구분): {e}")
+                    pass
+            
+            # 7. 출장/휴가 특수 패턴 처리
             vacation_pattern = r'(\d{4})-(\d{1,2})-(\d{1,2}) \d{1,2}:\d{1,2} ~ \d{4}-\d{1,2}-\d{1,2}'
             if re.search(vacation_pattern, date_string):
                 try:
@@ -1682,8 +1749,15 @@ if selected_project == '이수 가능한 날짜 찾기':
     if disable_reason:
         st.info(disable_reason)
     
+    # 디버깅: 버튼 상태 확인
+    if processing_disabled:
+        st.warning(f"⚠️ 버튼이 비활성화되어 있습니다: {disable_reason}")
+    
     # 데이터 처리 시작
     if start_processing:
+        st.success("🎉 데이터 처리 시작! processing_step을 'converting'으로 변경합니다.")
+        logging.info("=== 데이터 처리 버튼 클릭됨 ===")
+        logging.info(f"현재 school_dataframes: {bool(st.session_state.school_dataframes)}")
         st.session_state.processing_step = 'converting'
         # Firebase에 상태 업데이트 (다른 사용자에게 알림)
         if firebase_available:
@@ -1692,6 +1766,12 @@ if selected_project == '이수 가능한 날짜 찾기':
 
     # 데이터 처리 흐름 시작
     if st.session_state.processing_step != 'start':
+        if not st.session_state.school_dataframes:
+            # 데이터프레임이 없는 경우 초기화
+            st.error("업로드된 파일을 찾을 수 없습니다. '파일 저장 및 공유하기' 버튼을 먼저 클릭해주세요!")
+            st.session_state.processing_step = 'start'
+            st.stop()  # 이후 코드 실행 중단
+        
         if st.session_state.school_dataframes:
             for school_code, dataframes_info in st.session_state.school_dataframes.items():
                 if not dataframes_info:  # 빈 리스트인 경우 스킵
@@ -1700,6 +1780,7 @@ if selected_project == '이수 가능한 날짜 찾기':
                 school_info = next((s for s in st.session_state.school_list if s['SD_SCHUL_CODE'] == school_code), None)
                 if school_info:
                     st.write(f"## 학교: {school_info['SCHUL_NM']} ({school_info['ATPT_OFCDC_SC_NM']})")
+
                     
                     # 날짜 변환 단계
                     if st.session_state.processing_step == 'converting':
@@ -1732,25 +1813,32 @@ if selected_project == '이수 가능한 날짜 찾기':
                         logger.info("날짜 컬럼 자동 탐지 시작")
                         date_columns = []
                         
-                        # 우선 처리할 컬럼명 정의
-                        priority_columns = ['출장기간', '기간', '휴가기간', '날짜']
+                        # 1단계: datetime64 타입  컬럼 우선 선택
+                        for col in combined_df.columns:
+                            if pd.api.types.is_datetime64_any_dtype(combined_df[col]):
+                                date_columns.append(col)
+                                logger.info(f"datetime64 타입 컬럼 발견: {col}")
                         
-                        # 1. 우선 처리할 컬럼명 먼저 확인
-                        for priority_col in priority_columns:
+                        # 2단계: 우선순위 키워드 검색 (출장기간, 기간)
+                        if not date_columns:  # datetime64 타입이 없으면 키워드 검색
+                            priority_keywords = ['출장기간', '기간']
                             for col in combined_df.columns:
-                                if str(col).lower() == priority_col.lower() or str(col).lower().find(priority_col.lower()) >= 0:
+                                col_lower = str(col).lower()
+                                if any(keyword in col_lower for keyword in priority_keywords):
                                     date_columns.append(col)
-                                    logger.info(f"우선순위 컬럼 발견: {col} (키워드: {priority_col})")
-                                    st.success(f"우선순위 날짜 컬럼 발견: **{col}**")
+                                    logger.info(f"우선순위 키워드 '{col}' 컬럼 발견")
                         
-                        # 2. 키워드로 컬럼명 검색
+                        # 3단계: 일반 날짜 관련 키워드 검색
                         if not date_columns:  # 우선순위 컬럼이 없을 경우에만 다른 키워드 검색
+                            # 확장된 키워드 리스트
+                            date_keywords = ['날짜', 'date', '일자', '연가', '휴가', '조퇴', 
+                                            '반차', '시작일', '종료일', '일정', '근무', '출장']
                             for col in combined_df.columns:
-                                # 컬럼명에 날짜 관련 키워드가 있는지 확인
-                                if any(keyword in str(col).lower() for keyword in ['날짜', 'date', '일시', '기간']):
+                                col_lower = str(col).lower()
+                                if any(keyword in col_lower for keyword in date_keywords):
                                     date_columns.append(col)
-                                    logger.info(f"컬럼명 키워드로 찾음: {col}")
-                                    continue
+                        
+                        # 4단계: 데이터 샘플을 확인하여 날짜 포맷이 포함된 컬럼 찾기
                         
                         # 3. 데이터 내용으로 찾기 (위에서 찾은 컬럼이 없을 경우)
                         if not date_columns:
@@ -1960,15 +2048,26 @@ if selected_project == '이수 가능한 날짜 찾기':
                             # 추출된 날짜를 combined_df에 복사
                             combined_df['날짜'] = result_df['추출된_날짜']
                             
-                            # 날짜가 None인 행 제거
+                            # 1. 원본 날짜가 NaN인 행 제거
+                            original_count = len(combined_df)
+                            combined_df = combined_df[combined_df['원본_날짜'].notna() & (combined_df['원본_날짜'] != '')]
+                            nan_original_removed = original_count - len(combined_df)
+                            
+                            if nan_original_removed > 0:
+                                st.info(f"원본 날짜가 비어있는 {nan_original_removed}개 행을 제거했습니다.")
+                            
+                            # 2. 날짜가 None인 행 제거
                             invalid_rows = combined_df[combined_df['날짜'].isna()]
                             if len(invalid_rows) > 0:
                                 st.warning(f"{len(invalid_rows)}개의 날짜를 처리할 수 없어 제외합니다.")
                             
                             combined_df = combined_df.dropna(subset=['날짜'])
                             
-                            # 중복 날짜 제거
+                            # 3. 중복 날짜 제거
                             existing_dates = set(combined_df['날짜'])
+                            
+                            # 최종 통계 표시
+                            st.success(f"총 {len(existing_dates)}개의 고유한 날짜를 추출했습니다.")
                             
                             # 결과 단계로 세션 상태 업데이트
                             st.session_state.processing_step = 'results'
@@ -1985,80 +2084,83 @@ if selected_project == '이수 가능한 날짜 찾기':
                     # 결과 표시 단계
                     elif st.session_state.processing_step == 'results':
                         # 저장된 데이터 사용
-                        existing_dates = st.session_state.existing_dates
-                        school_code = st.session_state.school_code
+                        existing_dates = st.session_state.get('existing_dates', None)
+                        school_code = st.session_state.get('school_code', None)
                         
-                        # 처리된 날짜 목록 표시
-                        st.write("### 처리된 날짜 목록")
-                        
-                        # 표로 볼 수 있게 표시
-                        date_df = pd.DataFrame(sorted(list(existing_dates)), columns=['날짜'])
-                        date_df['요일'] = date_df['날짜'].apply(lambda x: ['월', '화', '수', '목', '금', '토', '일'][x.weekday()])
-                        date_df['표시_날짜'] = date_df['날짜'].apply(format_date)
-                        
-                        st.write(f"총 {len(existing_dates)}개의 고유한 날짜가 발견되었습니다:")
-                        st.dataframe(date_df[['표시_날짜', '요일']])
-                        
-                        # 이용 가능한 날짜 계산
-                        available_days_df = process_dates(existing_dates, school_code)
-                        
-                        # 결과 표시
-                        st.subheader("데이터 처리 결과")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.write("### 업로드된 데이터의 날짜")
+                        # 데이터가 없으면 에러 메시지만 표시하고 rerun 하지 않음
+                        if existing_dates is None or school_code is None:
+                            st.error("처리된 데이터가 없습니다. 다시 데이터 처리를 시작해주세요.")
+                            st.session_state.processing_step = 'start'
+                            # rerun()을 여기서 호출하지 않음 - 사용자가 다시 시작해야 함
+                        elif len(existing_dates) == 0:
+                            st.warning("추출된 날짜가 없습니다. 파일을 확인해주세요.")
+                            st.session_state.processing_step = 'start'
+                        else:
+                            # 정상적인 데이터가 있을 때만 결과 표시
+                            # 처리된 날짜 목록 표시
+                            st.write("### 처리된 날짜 목록")
+                            
+                            # 표로 볼 수 있게 표시
+                            date_df = pd.DataFrame(sorted(list(existing_dates)), columns=['날짜'])
+                            date_df['요일'] = date_df['날짜'].apply(lambda x: ['월', '화', '수', '목', '금', '토', '일'][x.weekday()])
+                            date_df['표시_날짜'] = date_df['날짜'].apply(format_date)
+                            
+                            st.write(f"총 {len(existing_dates)}개의 고유한 날짜가 발견되었습니다:")
                             st.dataframe(date_df[['표시_날짜', '요일']])
                             
-                            # 날짜 개수 표시
-                            st.info(f"총 {len(date_df)}개의 날짜가 발견되었습니다.")
-                        
-                        with col2:
-                            st.write("### 이용 가능한 날짜")
-                            # 날짜 표시 형식 변경
-                            available_days_df['표시_날짜'] = available_days_df['날짜'].dt.date.apply(format_date)
-                            st.dataframe(available_days_df[['표시_날짜', '요일']])
+                            # 이용 가능한 날짜 계산
+                            available_days_df = process_dates(existing_dates, school_code)
                             
-                            # 가용 날짜 개수 표시
-                            st.info(f"총 {len(available_days_df)}개의 이용 가능한 날짜가 있습니다.")
-
-                        # 월별 통계 (현재 학년도 데이터 사용)
-                        st.write("### 월별 이용 가능한 날짜 수")
-                        monthly_stats = available_days_df['날짜'].dt.to_period('M').value_counts().sort_index()
-                        monthly_stats.index = monthly_stats.index.strftime('%Y-%m')
-                        st.bar_chart(monthly_stats)
-                        
-                        # 요일별 통계
-                        st.write("### 요일별 이용 가능한 날짜 수")
-                        weekday_stats = available_days_df['요일'].value_counts()
-                        st.bar_chart(weekday_stats)
-                        
-                        # 엑셀 파일로 저장
-                        output = io.BytesIO()
-                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                            # 업로드된 날짜 정보를 포함한 데이터프레임 저장
-                            date_df.to_excel(writer, sheet_name='업로드된 날짜', index=False)
+                            # 결과 표시
+                            st.subheader("데이터 처리 결과")
                             
-                            # 이용 가능한 날짜 정보를 포함한 데이터프레임 저장
-                            available_days_df.to_excel(writer, sheet_name='이용 가능한 날짜', index=False)
-                        
-                        output.seek(0)
-                        
-                        st.download_button(
-                            label=f"{school_info['SCHUL_NM']} 데이터 다운로드",
-                            data=output,
-                            file_name=f"{school_info['SCHUL_NM']}_processed_data.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-                        
-                        # 새로운 처리 시작 버튼
-                        if st.button("새로운 데이터 처리", key="new_processing"):
-                            st.session_state.processing_step = 'start'
-                            # Firebase 상태 초기화
-                            if firebase_available:
-                                update_session_state("start")
-                            st.rerun()
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.write("### 업로드된 데이터의 날짜")
+                                st.dataframe(date_df[['표시_날짜', '요일']])
+                                st.info(f"총 {len(date_df)}개의 날짜가 발견되었습니다.")
+                            
+                            with col2:
+                                st.write("### 이용 가능한 날짜")
+                                available_days_df['표시_날짜'] = available_days_df['날짜'].dt.date.apply(format_date)
+                                st.dataframe(available_days_df[['표시_날짜', '요일']])
+                                st.info(f"총 {len(available_days_df)}개의 이용 가능한 날짜가 있습니다.")
+                            
+                            # 월별 통계
+                            st.write("### 월별 이용 가능한 날짜 수")
+                            monthly_stats = available_days_df['날짜'].dt.to_period('M').value_counts().sort_index()
+                            monthly_stats.index = monthly_stats.index.strftime('%Y-%m')
+                            st.bar_chart(monthly_stats)
+                            
+                            # 요일별 통계
+                            st.write("### 요일별 이용 가능한 날짜 수")
+                            weekday_stats = available_days_df['요일'].value_counts()
+                            st.bar_chart(weekday_stats)
+                            
+                            # 엑셀 파일로 저장
+                            output = io.BytesIO()
+                            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                                date_df.to_excel(writer, sheet_name='업로드된_날짜', index=False)
+                                available_days_df.to_excel(writer, sheet_name='이용_가능한_날짜', index=False)
+                            
+                            output.seek(0)
+                            
+                            # 다운로드 버튼
+                            now = datetime.now().strftime('%Y-%m-%dT%H-%M')
+                            st.download_button(
+                                label=f"{school_info['SCHUL_NM']} 데이터 다운로드",
+                                data=output,
+                                file_name=f"{now}_export.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                            
+                            # 새로운 처리 시작 버튼
+                            if st.button("새로운 데이터 처리", key="new_processing"):
+                                st.session_state.processing_step = 'start'
+                                if firebase_available:
+                                    update_session_state("start")
+                                st.rerun()
         else:
             st.warning("처리할 데이터가 없습니다. 먼저 파일을 업로드해주세요.")
 
